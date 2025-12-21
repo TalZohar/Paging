@@ -2,6 +2,7 @@ from typing import List
 from paging_model import Page, Request
 from online_algorithm import OnlineVariableCacheSystem
 from offline_solver import OfflineOptimalSolver
+from offline_solver_visualization import visualize_solution
 
 def run_experiment():
     # 1. Setup Environment
@@ -15,14 +16,18 @@ def run_experiment():
     p_map = {p.id: p for p in pages}
 
     # Request Sequence
-    raw_seq = ["A", "B", "C", "A", "D", "B"]
+    raw_seq = ["A", "B", "C", "A", "D", "D", "C"]
     
     # Variable Capacity
     # Note how t=3 forces a bottleneck (k=1)
     capacities = {
-        1: 2, 2: 2, 
-        3: 1, 
-        4: 2, 5: 2, 6: 2
+        1: 2, 
+        2: 2, 
+        3: 2, 
+        4: 3, 
+        5: 1, 
+        6: 2, 
+        7: 2
     }
 
     # Create Request Objects
@@ -36,8 +41,11 @@ def run_experiment():
     # 2. Run Online Algorithm
     print(">>> Running Online Algorithm (Greedy Oracle)...")
     online_sys = OnlineVariableCacheSystem(pages, capacities)
-    online_cost = online_sys.run(requests)
+    online_cost, on_states = online_sys.run(requests)
     print(f"Online Total Cost: {online_cost}\n")
+    print("Online Schedule:")
+    for s in on_states:
+        print(f"  {s}")
 
     # 3. Run Offline Optimal Solver
     print(">>> Running Offline Optimal Solver (Min-Cost Flow)...")
@@ -48,6 +56,10 @@ def run_experiment():
     print("Offline Schedule:")
     for s in off_states:
         print(f"  {s}")
+
+    print("\nVisualizing...")
+    G, flow = offline_solver.get_graph_for_viz()
+    visualize_solution(G, requests, flow)
 
     # 4. Comparison
     print("\n==========================================")

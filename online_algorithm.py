@@ -1,5 +1,5 @@
 # online_algorithm.py
-from typing import List, Dict, Set
+from typing import List, Dict, Set, Tuple
 from paging_model import Page, Request, CacheState
 from online_strategies import EvictionOracle, DominationStrategy, FurthestInFutureOracle, NoOpDominationStrategy
 
@@ -20,7 +20,7 @@ class OnlineVariableCacheSystem:
         self.history: List[CacheState] = []
         self.labels: Dict[int, float] = {} # Map request_index -> label value
 
-    def run(self, requests: List[Request]) -> float:
+    def run(self, requests: List[Request]) -> Tuple[float, List[CacheState]]:
         print("\n--- Starting Online Simulation ---")
         
         # Initialize labels for all requests to 0
@@ -46,7 +46,7 @@ class OnlineVariableCacheSystem:
             # Record state
             self.history.append(CacheState(t, k_t, set(self.cache)))
 
-        return self.total_cost
+        return self.total_cost, self.history
 
     def _evict(self, current_req_idx: int, current_time: int, all_requests: List[Request]):
         future_reqs = all_requests[current_req_idx+1:]

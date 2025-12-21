@@ -1,99 +1,189 @@
 import networkx as nx
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Any
 from paging_model import Page, Request, CacheState
 
 class OfflineOptimalSolver:
     def __init__(self, pages: List[Page], requests: List[Request], capacities: Dict[int, int]):
+        self.pages = pages
         self.requests = requests
         self.capacities = capacities
-        self.SOURCE = 'source'
-        self.SINK = 'sink'
+        self.page_to_idx = {p.id: i for i, p in enumerate(pages)}
+        self.idx_to_page = {i: p for i, p in enumerate(pages)}
+        self.LARGE = 1_000_000
 
     def solve(self) -> Tuple[float, List[CacheState]]:
-        G = self._build_graph()
+        G = self._build_layered_graph()
+        max_k = max(self.capacities.values()) if self.capacities else 1
+        
         try:
             flow_dict = nx.min_cost_flow(G)
         except nx.NetworkXUnfeasible:
-            print("Graph infeasible.")
+            print("Graph is infeasible.")
             return 0.0, []
-        return self._reconstruct(G, flow_dict)
+        
+        states = self._reconstruct(G, flow_dict)
+        real_cost = self._calculate_real_cost(states, True)
+        return real_cost, states
 
-    def _build_graph(self) -> nx.DiGraph:
+    def get_graph_for_viz(self):
+        G = self._build_layered_graph()
+        try:
+            flow_dict = nx.min_cost_flow(G)
+            return G, flow_dict
+        except:
+            return G, None
+
+    def _build_layered_graph(self) -> nx.DiGraph:
         G = nx.DiGraph()
-        T = len(self.requests)
+        n = len(self.pages)
         max_k = max(self.capacities.values()) if self.capacities else 1
-
-        G.add_node(self.SOURCE, demand=-max_k)
-        G.add_node(self.SINK, demand=max_k)
-
-        # 1. Create Split Nodes and Bottlenecks
-        for i in range(T):
-            u_in = f"{i}_in"
-            u_out = f"{i}_out"
-            G.add_node(u_in)
-            G.add_node(u_out)
+        T = len(self.requests)
+        
+        G.add_node('source', demand=-max_k)
+        G.add_node('sink', demand=max_k)
+        
+        # --- 1. Initial State (Layer 0) ---
+        initial_k = self.capacities.get(1, 1)
+        
+        # A. Create Split Page Nodes for Layer 0
+        for i in range(n):
+            # Internal Edge: Page_In -> Page_Out with Cap 1
+            G.add_edge((0, 'page_in', i), (0, 'page_out', i), capacity=1, weight=0)
+            # Source -> Page_In
+            G.add_edge('source', (0, 'page_in', i), capacity=1, weight=0)
             
-            # Bottleneck Edge: Enforces k_{t}
-            # Capacity is k-1 because current request takes 1 mandatory slot
-            k_t = self.capacities.get(i + 1, 1)
-            cap = max(0, k_t - 1)
-            G.add_edge(u_in, u_out, capacity=cap, weight=0, type='bottleneck')
+        # B. Create Split Active Slot Node for Layer 0
+        slot_cap = max(0, max_k - initial_k)
+        G.add_edge((0, 'slot_in'), (0, 'slot_out'), capacity=slot_cap, weight=-self.LARGE)
+        G.add_edge('source', (0, 'slot_in'), capacity=max_k, weight=0)
 
-        # 2. Backbone (Time) Edges
-        # Connect i_out -> (i+1)_in
-        for i in range(T - 1):
-            u_out = f"{i}_out"
-            v_in = f"{i+1}_in"
-            G.add_edge(u_out, v_in, capacity=max_k, weight=0, type='backbone')
+        # --- 2. Build Layers (Transitions) ---
+        for t in range(T):
+            req = self.requests[t]
+            req_p_idx = self.page_to_idx[req.page.id]
+            
+            # Transitioning from Layer t -> Layer t+1
+            
+            # Create Split Nodes for Layer t+1
+            # 1. Page Nodes
+            for i in range(n):
+                G.add_edge((t+1, 'page_in', i), (t+1, 'page_out', i), capacity=1, weight=0)
+            
+            # 2. Active Slot Node
+            curr_k = self.capacities.get(t + 1, 1) # Capacity at step t+1
+            # "Active Slot" flow represents items NOT in the main cache (slack)
+            # Capacity is max_k - curr_k
+            slot_cap = max(0, max_k - curr_k)
+            G.add_edge((t+1, 'slot_in'), (t+1, 'slot_out'), capacity=slot_cap, weight=-self.LARGE)
 
-        # 3. Interval Edges (Savings)
-        last_seen = {}
-        for i, req in enumerate(self.requests):
-            if req.page.id in last_seen:
-                prev = last_seen[req.page.id]
-                u_out = f"{prev}_out"
-                v_in = f"{i}_in"
-                # Keep page from after 'prev' until start of 'i'
-                G.add_edge(u_out, v_in, capacity=1, weight=-req.page.weight, type='interval', page=req.page)
-            last_seen[req.page.id] = i
+            # --- Define Edges from Layer t (OUT nodes) to Layer t+1 (IN nodes) ---
 
-        # 4. Circulation Bypass
-        G.add_edge(self.SOURCE, "0_in", capacity=max_k, weight=0)
-        G.add_edge(f"{T-1}_out", self.SINK, capacity=max_k, weight=0)
-        G.add_edge(self.SOURCE, self.SINK, capacity=max_k, weight=0)
+            # A. Page to Page (Fully Connected)
+            for i in range(n):
+                for j in range(n):
+                    weight = 0
+                    if i != j:
+                        weight = -self.pages[j].weight # Switching Cost
+                    
+                    if j == req_p_idx:
+                        weight -= self.LARGE
+                        
+                    # From Page_Out(t) -> Page_In(t+1)
+                    G.add_edge((t, 'page_out', i), (t+1, 'page_in', j), capacity=1, weight=weight)
+
+            # B. Page to Active Slot
+            for i in range(n):
+                # Weight 0
+                G.add_edge((t, 'page_out', i), (t+1, 'slot_in'), capacity=1, weight=0)
+            
+            # C. Active Slot to Page
+            for j in range(n):
+                weight = -self.pages[j].weight # Loading cost
+                if j == req_p_idx:
+                    weight -= self.LARGE
+                
+                G.add_edge((t, 'slot_out'), (t+1, 'page_in', j), capacity=1, weight=weight)
+
+            # D. Active Slot to Active Slot
+            G.add_edge((t, 'slot_out'), (t+1, 'slot_in'), capacity=max_k, weight=0)
+
+        # --- 3. Connect Last Layer to Sink ---
+        last_t = T
+        
+        # Connect Page_Out to Sink
+        for i in range(n):
+            G.add_edge((last_t, 'page_out', i), 'sink', capacity=1, weight=0)
+            
+        # Connect Slot_Out to Sink
+        G.add_edge((last_t, 'slot_out'), 'sink', capacity=max_k, weight=0)
 
         return G
 
-    def _reconstruct(self, G, flow) -> Tuple[float, List[CacheState]]:
-        base_cost = sum(r.page.weight for r in self.requests)
-        savings = 0.0
-        active_intervals = set()
-
-        for u, neighbors in flow.items():
-            for v, f in neighbors.items():
-                if f > 0:
-                    data = G.get_edge_data(u, v)
-                    if data.get('type') == 'interval':
-                        savings += (-data['weight'])
-                        # Edge u->v corresponds to nodes {prev}_out -> {i}_in
-                        # Extract indices from node names strings
-                        prev_idx = int(u.split('_')[0])
-                        curr_idx = int(v.split('_')[0])
-                        active_intervals.add((prev_idx, curr_idx, data['page']))
-
+    def _reconstruct(self, G, flow_dict) -> List[CacheState]:
         states = []
-        for i, req in enumerate(self.requests):
-            t = i + 1
+        n = len(self.pages)
+        T = len(self.requests)
+        
+        for t in range(1, T + 1):
             k = self.capacities.get(t, 1)
-            pages = {req.page}
+            pages_in_cache = set()
             
-            for start, end, p in active_intervals:
-                # Page is kept in cache AFTER request 'start' until request 'end'
-                if start < i < end:
-                    pages.add(p)
-                # Boundary condition: At step 'start', page is req. At step 'end', page is req.
-                # Between them (start < i < end), it consumes backbone capacity.
+            for i in range(n):
+                # Check flow passing through the internal node
+                # edge: page_in -> page_out
+                u = (t, 'page_in', i)
+                v = (t, 'page_out', i)
+                
+                flow = 0
+                if flow_dict and u in flow_dict and v in flow_dict[u]:
+                    flow = flow_dict[u][v]
+                
+                if flow > 0.9:
+                    pages_in_cache.add(self.idx_to_page[i])
             
-            states.append(CacheState(t, k, pages))
+            states.append(CacheState(t, k, pages_in_cache))
+        return states
 
-        return base_cost - savings, states
+    def _calculate_real_cost(self, states: List[CacheState], verbose: bool = False) -> float:
+        """
+        Calculates pure paging cost (sum of weights of loaded pages).
+        If verbose=True, prints the breakdown of costs to stdout.
+        """
+        cost = 0.0
+        if not states: return 0.0
+        
+        if verbose:
+            print("\n--- Cost Breakdown ---")
+        
+        # 1. Initial Load (t=1)
+        # We assume the cache starts empty, so everything present at t=1 is a 'load'
+        current_pages = states[0].pages
+        step_cost = sum(p.weight for p in current_pages)
+        cost += step_cost
+        
+        if verbose:
+            p_ids = sorted([p.id for p in current_pages])
+            print(f"t=1 [Initial]: Loaded {p_ids}. Cost += {step_cost} (Current Total: {cost})")
+        
+        # 2. Transitions (t=2 to T)
+        for i in range(1, len(states)):
+            t = states[i].time_step
+            prev = states[i-1].pages
+            curr = states[i].pages
+            
+            # Identify pages that are in the current state but weren't in the previous
+            new_pages = curr - prev
+            step_cost = sum(p.weight for p in new_pages)
+            cost += step_cost
+            
+            if verbose:
+                if new_pages:
+                    p_ids = sorted([p.id for p in new_pages])
+                    print(f"t={t} [Load]   : Loaded {p_ids}. Cost += {step_cost} (Current Total: {cost})")
+                else:
+                    print(f"t={t} [Hit/Hold]: No new pages loaded.")
+                    
+        if verbose:
+            print(f"--- Final Real Cost: {cost} ---\n")
+            
+        return cost

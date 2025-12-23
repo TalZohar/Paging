@@ -3,38 +3,25 @@ from paging_model import Page, Request
 from online_algorithm import OnlineVariableCacheSystem
 from offline_solver import OfflineOptimalSolver
 from offline_solver_visualization import visualize_solution
+from recursive_request_sequence import generate_recursive_sequence
+
 
 def run_experiment():
-    # 1. Setup Environment
-    # Pages with different weights
-    pages = [
-        Page("A", 1.0),
-        Page("B", 2.0),
-        Page("C", 10.0),
-        Page("D", 3.0)
-    ]
-    p_map = {p.id: p for p in pages}
+    # --- Configuration - --
+    N = 3  # Number of pages
+    T_val = 2  # Base weight t
+    A_val = 3
 
-    # Request Sequence
-    raw_seq = ["A", "B", "C", "A", "D", "D", "C"]
-    
-    # Variable Capacity
-    # Note how t=3 forces a bottleneck (k=1)
-    capacities = {
-        1: 2, 
-        2: 2, 
-        3: 2, 
-        4: 3, 
-        5: 1, 
-        6: 2, 
-        7: 2
-    }
+    # Generate Sequence
+    pages, requests = generate_recursive_sequence(N, T_val, A_val)
 
-    # Create Request Objects
-    requests = [Request(i, p_map[pid], i+1) for i, pid in enumerate(raw_seq)]
+    # Create simple Capacity Schedule (Constant k=1 just to force evictions)
+    # Length of sequence
+    L = len(requests)
+    capacities = {i: 2 for i in range(1, L + 2)}
 
     print("==========================================")
-    print(f"Experiment: {raw_seq}")
+    print(f"Experiment: {requests}")
     print(f"Capacities: {capacities}")
     print("==========================================\n")
 
@@ -51,7 +38,7 @@ def run_experiment():
     print(">>> Running Offline Optimal Solver (Min-Cost Flow)...")
     offline_solver = OfflineOptimalSolver(pages, requests, capacities)
     off_cost, off_states = offline_solver.solve()
-    
+
     print(f"Offline Optimal Cost: {off_cost}")
     print("Offline Schedule:")
     for s in off_states:
@@ -59,15 +46,20 @@ def run_experiment():
 
     print("\nVisualizing...")
     G, flow = offline_solver.get_graph_for_viz()
-    visualize_solution(G, requests, flow)
+    flow_cost = offline_solver._calculate_real_cost_from_flow(G, flow, True)
+    # visualize_solution(G, requests, flow)
+    print(f"flow cost {flow_cost}")
 
     # 4. Comparison
     print("\n==========================================")
     print(f"Summary:")
     print(f"  Online Cost:  {online_cost}")
     print(f"  Optimal Cost: {off_cost}")
-    print(f"  Competitive Ratio (Approx): {online_cost / off_cost if off_cost > 0 else 'inf'}")
+    print(
+        f"  Competitive Ratio (Approx): {online_cost / off_cost if off_cost > 0 else 'inf'}"
+    )
     print("==========================================")
+
 
 if __name__ == "__main__":
     run_experiment()
